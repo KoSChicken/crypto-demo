@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>ECDH Key Exchange</title>
+
+    <script>
+        let sharedSecret
+        let aesKey
+        (async () => {
+            const crypto = window.crypto
+
+            // 生成ECDH密钥对
+            const keyPair = await crypto.subtle.generateKey(
+                {name: "ECDH", namedCurve: "P-256"},
+                true,
+                ["deriveKey"]
+            );
+
+            // 导出公钥
+            const publicKey = await crypto.subtle.exportKey("spki", keyPair.publicKey);
+            // 发送客户端公钥给服务器并获取服务器计算的AES密钥
+            const clientPublicKeyBase64 = btoa(String.fromCharCode(...new Uint8Array(publicKey)));
+            const serverAesKeyResponse = await fetch('/exchangeKey', {
+                method: 'POST',
+                headers: {'Content-Type': 'text/plain'},
+                body: clientPublicKeyBase64
+            });
+            document.getElementById('serverKey').innerText = await serverAesKeyResponse.text();
+
+            // 获取服务器公钥
+            const serverPublicKeyResponse = await fetch('/publicKey');
+            const serverPublicKeyBase64 = await serverPublicKeyResponse.text();
+            const serverPublicKeyBytes = Uint8Array.from(atob(serverPublicKeyBase64), c => c.charCodeAt(0));
+
+            // 打印服务器公钥字节数组
+            console.log("Server Public Key Bytes:", serverPublicKeyBytes);
+
+            // 导入服务器公钥
+            try {
+                const serverPublicKey = await crypto.subtle.importKey(
+                    "spki",
+                    serverPublicKeyBytes,
+                    {name: "ECDH", namedCurve: "P-256"},
+                    false,
+                    []
+                );
+
+                // 生成共享密钥
+                sharedSecret = await crypto.subtle.deriveKey(
+                    {name: "ECDH", public: serverPublicKey},
+                    keyPair.privateKey,
+                    {name: "AES-GCM", length: 256},
+                    true,
+                    ["encrypt", "decrypt"]
+                );
+
+                // 导出AES密钥
+                aesKey = await crypto.subtle.exportKey("raw", sharedSecret);
+                document.getElementById('clientKey').innerText = btoa(String.fromCharCode(...new Uint8Array(aesKey)));
+            } catch (error) {
+                console.error("Error importing server public key:", error);
+            }
+        })();
+
+        async function encryptAndSend() {
+            const plaintext = document.getElementById('inputText').value;
+
+            const {iv, ciphertext} = await encryptText(sharedSecret, plaintext);
+            document.getElementById('encryptedText').innerText = ciphertext;
+
+            const decryptResponse = await fetch('/decrypt', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({iv: iv, ciphertext: ciphertext})
+            });
+
+            document.getElementById('decryptedText').innerText = await decryptResponse.text();
+        }
+
+        async function encryptText(key, plaintext) {
+            const encoder = new TextEncoder();
+            const data = encoder.encode(plaintext);
+            const iv = crypto.getRandomValues(new Uint8Array(12));
+
+            const encryptedData = await crypto.subtle.encrypt(
+                {name: "AES-GCM", iv: iv},
+                key,
+                data,
+            );
+
+            return {
+                iv: Array.from(iv).map(b => ('00' + b.toString(16)).slice(-2)).join(''),
+                ciphertext: btoa(String.fromCharCode.apply(null, new Uint8Array(encryptedData)))
+            };
+        }
+    </script>
+</head>
+<body>
+<h1>ECDH Key Exchange</h1>
+<p>Server AES Key: <span id="serverKey"></span></p>
+<p>Client AES Key: <span id="clientKey"></span></p>
+<h1>Enter text to encrypt:</h1>
+<label for="inputText"></label><input type="text" id="inputText"/>
+<button onclick="encryptAndSend()">Send</button>
+<h2>Encrypted text:</h2>
+<p id="encryptedText"></p>
+<h2>Decrypted text:</h2>
+<p id="decryptedText"></p>
+</body>
+</html>
